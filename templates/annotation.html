@@ -1,0 +1,54 @@
+{% extends "base.html" %} {% block content %}
+<div id="header">
+  <h3>ADH DCIS Scorer</h3>
+    <p>
+      <small>
+        All dicoms need to have an annotation before moving to the next step. Click on a row to load the dicom. Annotate using the left mouse button. Right mouse button changes window settings. Scroll zooms in and out. Holding scroll button pans.
+      </small>
+    </p>
+</div>
+<div id="content-container" class="main">
+  <section class="flex-container">
+    <div class="flex-child left">
+      <div class="cornerstone-element-wrapper">
+        <div class="cornerstone-element" data-index="0" oncontextmenu="return false"></div>
+      </div>
+      <div class="button-container">
+        <input style="margin: 0 auto;display:block;" type="button" id="clear_btn" value="Clear Annotation" class="button" onclick="clearAnnotation();"/>
+        <input style="margin: 0 auto;display:block;" type="button" id="run_btn" value="Run Model" class="button" onclick="runModel();"/>
+      </div>
+    </div>
+    <div class="flex-child right">
+      <div id="table-container"></div>
+    </div>
+  </section>
+</div>
+
+<!-- <div id="content-container" class="main">
+  <div class="title">
+    <h3>Dicom Scorer</h3>
+    <p>
+      <small></small>
+    </p>
+  </div>
+
+  <div class="flex-container">
+    <div class="flex-child magenta">
+      <div style="" class="cornerstone-element-wrapper">
+        <div class="cornerstone-element" data-index="0" oncontextmenu="return false"></div>
+      </div>
+      <div style="margin-bottom: 2rem;">
+        <input type="button" id="run_btn" value="Run Model" class="button" onclick="runModel();" disabled/>
+        <input type="button" id="csv_btn" value="Download Dataset" class="button" onclick="downloadDataset();"/>    
+        <input type="button" id="clear_btn" value="Clear Annotation" class="button" onclick="clearAnnotation();"/>
+      </div>
+    </div>
+  
+    <div class="flex-child green">
+      <div id="table-container"></div>
+    </div>
+  </div>
+</div> -->
+<script src="{{ url_for('static',filename='imageLoader.js') }}"></script>
+<script src="{{ url_for('static',filename='annotatorPage.js') }}"></script> 
+{% endblock %}
