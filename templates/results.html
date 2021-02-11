@@ -3,23 +3,17 @@
   <h3>ADH DCIS Scorer</h3>
     <p>
       <small>
-        All dicoms need to have an annotation before moving to the next step. Click on a row to load the dicom. Annotate using the left mouse button. Right mouse button changes window settings. Scroll zooms in and out. Holding scroll button pans.
+        This page shows the result of running the model on the annotated files. The value in the result field is the algorithm's predicted probability that the calcification is DCIS rather than ADH. If you want to download a csv table containing all of the filenames, tags, and predicted probabilities, click download results. If you want to download a zip folder containing all of the dicoms and annotations so that you can upload them to this tool to run the predictions again, click download dataset.
       </small>
     </p>
 </div>
 <div id="content-container" class="main">
   <section class="flex-container">
-    <div class="flex-child left">
-      <div class="cornerstone-element-wrapper">
-        <div class="cornerstone-element" data-index="0" oncontextmenu="return false"></div>
-      </div>
-
+    <div class="flex-child">
       <div class="button-container">
-        <input style="margin: 2rem auto;" type="button" id="clear_btn" value="Clear Annotation" class="button" onclick="clearAnnotation();"/>
-        <input style="margin: 2rem auto;" type="button" id="run_btn" value="Run Model" class="button" onclick="location.href='{{ url_for("result") }}';"/>
+        <input style="margin: 2rem auto;" type="button" id="clear_btn" value="Download Dataset" class="button" onclick="downloadDataset();"/>
+        <input style="margin: 2rem auto;" type="button" id="run_btn" value="Download Results" class="button" onclick="downloadResults();"/>
       </div>
-    </div>
-    <div class="flex-child right">
       <div id="table-container"></div>
     </div>
   </section>
@@ -50,6 +44,5 @@
     </div>
   </div>
 </div> -->
-<script src="{{ url_for('static',filename='imageLoader.js') }}"></script>
-<script src="{{ url_for('static',filename='annotatorPage.js') }}"></script> 
+<script src="{{ url_for('static',filename='resultPage.js') }}"></script> 
 {% endblock %}

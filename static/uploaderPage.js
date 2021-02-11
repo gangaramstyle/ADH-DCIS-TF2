@@ -1,6 +1,20 @@
 /* Upload state - state variables */
-var uploads_table = [["Total upload", "0%"]];
+var uploads_table = [["File", "% Uploaded"]];
 var file_row_map = {}
+
+existing_files( (files) => {
+  for(var i = 0; i < files["body"].length; i++) {
+    var filename = files["body"][i][0];
+    var tag = files["body"][i][1];
+    file_row_map[filename] = uploads_table.push([filename, "100%"]) - 1;
+  }
+
+  if (files["body"].length > 0) {
+    writeTable_UploaderPage(uploads_table);
+    document.getElementById("annotate_btn").disabled = false;
+    document.getElementById("clear_btn").disabled = false;
+  }
+});
 
 /* Resumable code */
 
@@ -18,6 +32,8 @@ r.assignBrowse(document.getElementById("file-upload"));
 r.on('fileAdded', (file) => {
   file_exists(file.file.name, (exists) => {
     if (!exists) {
+      document.getElementById("annotate_btn").disabled = true;
+      document.getElementById("clear_btn").disabled = true;
       file_row_map[file.fileName] = uploads_table.push([file.fileName, "0%"]) - 1;
       writeTable_UploaderPage(uploads_table);
       r.upload();
@@ -43,12 +59,19 @@ r.on('complete', () => {
   document.getElementById("clear_btn").disabled = false;
 });
 
-
-r.on('progress', () => {
-  uploads_table[0][1] =
-   parseFloat(r.progress()*100).toFixed(0)+"%";
-  writeTable_UploaderPage(uploads_table);
-});
+function existing_files(callback) {
+  fetch("/upload-table", {
+    method: "POST",
+  })
+    .then(resp => {
+      if (resp.ok) {
+        resp.json().then(data => {
+          console.log(data);
+          callback(data);
+        });
+      }
+  });
+}
 
 function file_exists(filename, callback) {
   fetch("/file-exists", {

@@ -10,6 +10,7 @@ import pickle
 from skimage import exposure
 from skimage import morphology
 import scipy
+import nibabel as nib
 from io import BytesIO
 import tensorflow as tf
 
@@ -29,12 +30,28 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
 db = SQLAlchemy(app)
 
-class Results(db.Model):
+class Uploads(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(200), nullable=False)
+    tag = db.Column(db.String(200), nullable=False)
+
+    def __repr__(self):
+        return '<Result %r>' % self.filename
+
+class Annotations(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(200), nullable=False)
     thumbnail = db.Column(db.String(5000), nullable=True)
     annotated = db.Column(db.Boolean, unique=False, default=False)
-    accession = db.Column(db.String(200), nullable=True)
+    tag = db.Column(db.String(200), nullable=False)
+
+    def __repr__(self):
+        return '<Result %r>' % self.filename
+
+class Results(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(200), nullable=False)
+    thumbnail = db.Column(db.String(5000), nullable=True)
     result = db.Column(db.String(200), nullable=True)
     tag = db.Column(db.String(200), nullable=False)
 
@@ -95,8 +112,8 @@ def get_chunk_name_finished(uploaded_filename, chunk_number):
 @app.route('/upload', methods=['GET'])
 def index():
     # Main page
-    results = Results.query.all()
-    return render_template('index.html', results=results)
+    uploads = Uploads.query.all()
+    return render_template('index.html', results=uploads)
 
 @app.route("/file-exists", methods=['POST'])
 def file_exists():
@@ -184,8 +201,8 @@ def resumable_post():
         target_file.close()
         shutil.rmtree(temp_dir)
         app.logger.debug('File saved to: %s', target_file_name)
-        result = Results(filename=resumableFilename,  tag=tag_text)
-        db.session.add(result)
+        upload = Uploads(filename=resumableFilename,  tag=tag_text)
+        db.session.add(upload)
         db.session.commit()
         #return that file is fully uploaded
     return 'OK'
@@ -193,8 +210,12 @@ def resumable_post():
 @app.route("/delete-file", methods=['POST'])
 def delete_file():
     file = request.json
-    res = Results.query.filter_by(filename=file).first()
-    db.session.delete(res)
+    upload = Uploads.query.filter_by(filename=file).first()
+    annotation = Annotations.query.filter_by(filename=file).first()
+    result = Results.query.filter_by(filename=file).first()
+    db.session.delete(upload)
+    db.session.delete(annotation)
+    db.session.delete(result)
     db.session.commit()
     return 'OK'
 
@@ -205,6 +226,8 @@ def delete_all():
     delete_folder_contents(image_base)
     delete_folder_contents(dicom_base)
     delete_folder_contents(record_base)
+    Uploads.query.delete()
+    Annotations.query.delete()
     Results.query.delete()
     db.session.commit()
     
@@ -213,19 +236,34 @@ def delete_all():
 @app.route('/annotate', methods=['GET'])
 def annotate():
     # Annotation page
-    all_uploads = Results.query.all()
+    Annotations.query.delete()
+    db.session.commit()
+
+    all_uploads = Uploads.query.all()
     for upload in all_uploads:
         try: #check if the file is a valid dicom
             target_file_name = os.path.join(upload_base, upload.filename)
             dicom = pydicom.dcmread(target_file_name)
             shutil.copy(target_file_name, f"{dicom_base}{upload.filename}")
-        except: #not a dicom, so remove record from db
-            db.session.delete(upload)
+            annotation = Annotations(filename=upload.filename,  tag=upload.tag)
+            db.session.add(annotation)
             db.session.commit()
-    dicoms = Results.query.all()
+        except: #not a dicom, so try as a nifti
+            try:
+                target_file_name = os.path.join(upload_base, upload.filename)
+                nifti = nib.load(target_file_name)
+                shutil.copy(target_file_name, f"{dicom_base}{upload.filename}")
+                annotation = Annotations(filename=upload.filename,  tag=upload.tag)
+                db.session.add(annotation)
+                db.session.commit()
+            except: #neither dicom nor nifti so remove record from db
+                pass
+                #db.session.delete(upload)
+                #db.session.commit()
+    dicoms = Annotations.query.all()
 
     for dicom in dicoms:
-        thumbnail, _, valid_mask = generateThumbnail(f"{dicom_base}{dicom.filename}", f"{upload_base}{dicom.filename}.mask.pkl")
+        thumbnail, _, _, valid_mask = generateThumbnail(f"{dicom_base}{dicom.filename}", f"{upload_base}{dicom.filename}.mask.pkl")
         if valid_mask:
             shutil.copy(f"{upload_base}{dicom.filename}.mask.pkl", f"{mask_base}{dicom.filename}.mask.pkl")
             dicom.annotated = True
@@ -326,23 +364,29 @@ def normalize_Mammo_histogram(image, return_values=False, center_type='mean'):
     else:
         return img
 
-def generateThumbnail(dicom, mask=None):
+def generateThumbnail(image_file, mask=None):
     # returns a base64 encoded thumbnail, 
     # boolean for whether the dicom was valid,
     # and boolean for whether the mask was valid
     valid_dicom = False
+    valid_nifti = False
     valid_mask = False
     try:
-        dcm_data = pydicom.dcmread(dicom).pixel_array
-        img_data = exposure.equalize_adapthist(dcm_data) * 255
+        img_data = pydicom.dcmread(image_file).pixel_array
+        nrm_data = exposure.equalize_adapthist(img_data) * 255
         valid_dicom = True
     except:
-        return "", valid_dicom, valid_mask
+        try:
+            img_data = np.squeeze(nib.load(image_file).get_data())
+            nrm_data = exposure.equalize_adapthist(img_data) * 255
+            valid_nifti = True
+        except:
+            return "", valid_dicom, valid_nifti, valid_mask
     
     try:
         pickleFile = open(mask, 'rb')
         toolstate = pickle.load(pickleFile)
-        mask_data = np.zeros_like(dcm_data)
+        mask_data = np.zeros_like(img_data)
         for annotation in toolstate:
             points = [(point['x'], point['y']) for point in annotation['handles']['points']]
             points = np.array(points, dtype=np.int32)
@@ -351,31 +395,34 @@ def generateThumbnail(dicom, mask=None):
         pickleFile.close()
         valid_mask = True
     except:
-        mask_data = np.zeros_like(dcm_data)
+        mask_data = np.zeros_like(img_data)
     values = np.nonzero(mask_data)
-    print(len(values))
-    masked_channel = np.copy(img_data)
+    masked_channel = np.copy(nrm_data)
     masked_channel[values] = 255
-    thumbnail = np.concatenate((masked_channel[...,None], img_data[..., None], img_data[..., None]), axis=2)
+    thumbnail = np.concatenate((masked_channel[...,None], nrm_data[..., None], nrm_data[..., None]), axis=2)
     img = Image.fromarray(thumbnail.astype(np.uint8))
     img = img.resize((40, 40))
     buffered = BytesIO()
     img.save(buffered, format="png")
     img_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-    return img_b64, valid_dicom, valid_mask
+    return img_b64, valid_dicom, valid_nifti, valid_mask
 
 def resize_to_network(image):
     image = tf.image.resize(image, [128, 128])
     return image
 
-def preprocess(dicom, mask):
-    dcm = pydicom.dcmread(dicom)
-    dcm_image = dcm.pixel_array
-    dcm_image = normalize_Mammo_histogram(dcm_image)
-
+def preprocess(image_file, mask):
+    try:
+        dcm = pydicom.dcmread(image_file)
+        image = dcm.pixel_array
+    except:
+        nifti =  nib.load(image_file)
+        image = np.squeeze(nifti.get_data())
+    image = normalize_Mammo_histogram(image)
     pickleFile = open(mask, 'rb')
     toolstate = pickle.load(pickleFile)
-    mask_image = np.zeros_like(dcm_image)
+    mask_image = np.ascontiguousarray(np.zeros_like(image))
+
     for annotation in toolstate:
         points = [(point['x'], point['y']) for point in annotation['handles']['points']]
         points = np.array(points, dtype=np.int32)
@@ -399,13 +446,13 @@ def preprocess(dicom, mask):
     # assumes that the diameter is never larger than an image axis
     x_start = max(center[0] - radius, 0)
     y_start = max(center[1] - radius, 0)
-    if (x_start + 2*radius) > dcm_image.shape[1]:
-        x_start = dcm_image.shape[1] - 2*radius
-    if (y_start + 2*radius) > dcm_image.shape[0]:
-        y_start = dcm_image.shape[0] - 2*radius
+    if (x_start + 2*radius) > image.shape[1]:
+        x_start = image.shape[1] - 2*radius
+    if (y_start + 2*radius) > image.shape[0]:
+        y_start = image.shape[0] - 2*radius
     x_start = int(x_start)
     y_start = int(y_start)
-    bb = dcm_image[y_start:y_start + 2*radius, x_start:x_start + 2*radius]
+    bb = image[y_start:y_start + 2*radius, x_start:x_start + 2*radius]
 
     # TODO: Check 512
     ## rescale box
@@ -413,29 +460,28 @@ def preprocess(dicom, mask):
     box = box.reshape(512, 512, 1)
 
     image_batch = tf.expand_dims(tf.stack(resize_to_network(box)), axis=0)
-    print(image_batch.shape)
     loaded_model = tf.keras.models.load_model(model_base)
-    print(loaded_model.predict_on_batch(image_batch)['class'])
+    return(loaded_model.predict_on_batch(image_batch)['class'][0][1])
 
 @app.route("/save-region-annotation", methods=['POST'])
 def save_region_annotation():
     dicom = request.json['dicom']
     toolstate = request.json['toolstate']
-    res = Results.query.filter_by(filename=dicom).first()
+    res = Annotations.query.filter_by(filename=dicom).first()
     if toolstate == []:
         if os.path.exists(f"{mask_base}{dicom}.mask.pkl"):
             os.remove(f"{mask_base}{dicom}.mask.pkl")
-        thumbnail, _, _ = generateThumbnail(f"{dicom_base}{dicom}")
+        thumbnail, _, _, _ = generateThumbnail(f"{dicom_base}{dicom}")
         res.thumbnail = thumbnail
         res.annotated = False
     else:
         outfile = open(f"{mask_base}{dicom}.mask.pkl", 'wb')
         pickle.dump(toolstate, outfile)
         outfile.close()
-        thumbnail, _, _ = generateThumbnail(f"{dicom_base}{dicom}", f"{mask_base}{dicom}.mask.pkl")
+        thumbnail, _, _, _ = generateThumbnail(f"{dicom_base}{dicom}", f"{mask_base}{dicom}.mask.pkl")
         res.thumbnail = thumbnail
         res.annotated = True
-        preprocess(f"{dicom_base}{dicom}", f"{mask_base}{dicom}.mask.pkl")
+        ###preprocess(f"{dicom_base}{dicom}", f"{mask_base}{dicom}.mask.pkl")
     db.session.commit()
     return 'OK'
 
@@ -446,7 +492,6 @@ def get_region_annotation():
         dicom = request.json['dicom']
         pickleFile = open(f"{mask_base}{dicom}.mask.pkl", 'rb')
         toolstate = pickle.load(pickleFile)
-        print(toolstate)
         return jsonify(toolstate)
     except:
         app.logger.debug('No mask found for: %s', dicom)
@@ -458,7 +503,7 @@ def downloadAnnotatedDataset():
     if request.method == 'POST':
         delete_folder_contents(zip_dir)
         # delete zip
-        records = Results.query.all()
+        records = Annotations.query.all()
         for record in records:
             make_subdirectories(f"{zip_dir}{record.tag}/")
             print(f"copying {record.filename}")
@@ -495,6 +540,76 @@ def downloadAnnotatedDataset():
     # return jsonify({'status':str(img_base64)})
 
 
+@app.route('/result', methods=['GET'])
+def result():
+    # Annotation page
+    Results.query.delete()
+    db.session.commit()
+
+    dicoms = Annotations.query.all()
+
+    for dicom in dicoms:
+        if dicom.annotated == True:
+            score = preprocess(f"{dicom_base}{dicom.filename}", f"{mask_base}{dicom.filename}.mask.pkl")
+            result = Results(filename=dicom.filename, thumbnail=dicom.thumbnail, result=f'{score*100:.1f}%', tag=dicom.tag)
+            db.session.add(result)
+            db.session.commit()
+
+    return render_template('results.html')
+
+    # annotated = Annotations.query.all()
+    # for upload in all_uploads:
+    #     try: #check if the file is a valid dicom
+    #         target_file_name = os.path.join(upload_base, upload.filename)
+    #         dicom = pydicom.dcmread(target_file_name)
+    #         shutil.copy(target_file_name, f"{dicom_base}{upload.filename}")
+    #         annotation = Annotations(filename=upload.filename,  tag=upload.tag)
+    #         db.session.add(annotation)
+    #         db.session.commit()
+    #     except: #not a dicom, so try as a nifti
+    #         try:
+    #             target_file_name = os.path.join(upload_base, upload.filename)
+    #             nifti = nib.load(target_file_name)
+    #             shutil.copy(target_file_name, f"{dicom_base}{upload.filename}")
+    #             annotation = Annotations(filename=upload.filename,  tag=upload.tag)
+    #             db.session.add(annotation)
+    #             db.session.commit()
+    #         except: #neither dicom nor nifti so remove record from db
+    #             pass
+    #             #db.session.delete(upload)
+    #             #db.session.commit()
+    # dicoms = Annotations.query.all()
+
+    # for dicom in dicoms:
+    #     thumbnail, _, _, valid_mask = generateThumbnail(f"{dicom_base}{dicom.filename}", f"{upload_base}{dicom.filename}.mask.pkl")
+    #     if valid_mask:
+    #         shutil.copy(f"{upload_base}{dicom.filename}.mask.pkl", f"{mask_base}{dicom.filename}.mask.pkl")
+    #         dicom.annotated = True
+    #     dicom.thumbnail = thumbnail
+    #     db.session.commit()
+
+    # return render_template('annotation.html')
+
+
+@app.route('/upload-table', methods=['POST'])
+def getUploadsTable():
+    uploads_table_header = [
+        'filename',
+        'tag'
+    ]
+    if request.method == 'POST':
+        uploads = Uploads.query.all()
+        table_body = []
+        for upload in uploads:
+            row = []
+            for key in uploads_table_header:
+                row.append(getattr(upload, key))
+            print(row)
+            table_body.append(row[:])
+
+        return jsonify({'body': table_body})
+
+
 @app.route('/annotation-table', methods=['GET'])
 def getAnnotationTable():
     annotation_table_header = [
@@ -504,7 +619,7 @@ def getAnnotationTable():
         'thumbnail'
     ]
     if request.method == 'GET':
-        results = Results.query.all()
+        results = Annotations.query.all()
         table_body = []
         for result in results:
             row = []
@@ -515,6 +630,26 @@ def getAnnotationTable():
 
         return jsonify({'header': annotation_table_header, 'body': table_body})
 
+
+@app.route('/results-table', methods=['GET'])
+def getResultsTable():
+    results_table_header = [
+        'thumbnail',
+        'filename',
+        'tag',
+        'result'
+    ]
+    if request.method == 'GET':
+        results = Results.query.all()
+        table_body = []
+        for result in results:
+            row = []
+            for key in results_table_header:
+                row.append(getattr(result, key))
+            print(row)
+            table_body.append(row[:])
+
+        return jsonify({'header': results_table_header, 'body': table_body})
 
 @app.route('/inference-status', methods=['GET'])
 def inferenceStatus():
@@ -534,8 +669,8 @@ def inferenceStatus():
 def runModel():
     if request.method == 'POST':
         dataset = tf.data.TFRecordDataset('train.tfrecords')
-        loaded_model = tf.keras.models.load_model('/tmp/model')
-        predict(loaded_model.predict_on_batch(image_batch)['class'])
+        loaded_model = tf.keras.models.load_model(model_base)
+        print(loaded_model.predict_on_batch(image_batch)['class'])
         return "Success"
     return 'Error'
 
@@ -543,19 +678,34 @@ def runModel():
 @app.route('/get-dicom', methods=['POST'])
 def getDicom():
     dicom_name = request.json
-    dcm = pydicom.dcmread(f'{dicom_base}{dicom_name}')
-    dicom_data = {
-        "transfer_syntax": str(dcm.file_meta.TransferSyntaxUID),
-        "slope": dcm.RescaleSlope,
-        "intercept": dcm.RescaleIntercept,
-        "windowCenter": windowHelper(dcm.WindowCenter),
-        "windowWidth": windowHelper(dcm.WindowWidth),
-        "rows": dcm.Rows,
-        "columns": dcm.Columns,
-        "minPixelValue": int(min(dcm.pixel_array.flatten())),
-        "maxPixelValue": int(max(dcm.pixel_array.flatten())),
-        "pixel_data": dcm.pixel_array.flatten().tolist()
-    }
+    try:
+        dcm = pydicom.dcmread(f'{dicom_base}{dicom_name}')
+        dicom_data = {
+            "transfer_syntax": str(dcm.file_meta.TransferSyntaxUID),
+            "slope": 1,
+            "intercept": int(min(dcm.pixel_array.flatten())),
+            "windowCenter": np.median(dcm.pixel_array),
+            "windowWidth": np.std(dcm.pixel_array),
+            "rows": dcm.pixel_array.shape[0],
+            "columns": dcm.pixel_array.shape[1],
+            "minPixelValue": int(min(dcm.pixel_array.flatten())),
+            "maxPixelValue": int(max(dcm.pixel_array.flatten())),
+            "pixel_data": dcm.pixel_array.flatten().tolist()
+        }
+    except:
+        nifti = nib.load(f'{dicom_base}{dicom_name}')
+        dicom_data = {
+            "transfer_syntax": '1.2.840.10008.1.2.2',
+            "slope": 1,
+            "intercept": 0,
+            "windowCenter": np.median(nifti.get_data()),
+            "windowWidth": np.std(nifti.get_data()),
+            "rows": nifti.get_data().shape[0],
+            "columns": nifti.get_data().shape[1],
+            "minPixelValue": int(min(np.squeeze(nifti.get_data()).flatten())),
+            "maxPixelValue": int(max(np.squeeze(nifti.get_data()).flatten())),
+            "pixel_data": np.squeeze(nifti.get_data()).flatten().tolist()
+        }
 
     return jsonify(dicom_data)
 

@@ -63,10 +63,16 @@ tbody tr:nth-of-type(even) {
     flex-wrap: wrap;
 }
 
+.button-container {
+    display: inline-block;
+    margin: 0 auto;
+}
+
 .flex-child {
     flex-grow: 1;
     padding: 1rem;
     margin: 10px;
+    text-align: center;
 }
 
 .left {
